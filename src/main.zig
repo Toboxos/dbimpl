@@ -1,71 +1,77 @@
 const std = @import("std");
-const Io = std.Io;
-
-const dbimpl = @import("dbimpl");
+const BufferManager = @import("buffer_manager").BufferManager;
 
 pub fn main(init: std.process.Init) !void {
-    // Prints to stderr, unbuffered, ignoring potential errors.
-    std.debug.print("All your {s} are belong to us.\n", .{"codebase"});
+    const io = init.io;
+    const stdout = std.Io.File.stdout();
 
-    // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
+    var bm = BufferManager{};
 
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
+    try stdout.writeStreamingAll(io, "=== Buffer Manager Tests ===\n");
+
+    // Test 1: Allocate a page
+    try stdout.writeStreamingAll(io,"\nTest 1: Allocate a page\n");
+    const alloc1 = try bm.allocPageFrame();
+    std.debug.print("  Allocated page with PFN: {}\n", .{alloc1.pfn});
+
+    // Test 2: Allocate another page
+    try stdout.writeStreamingAll(io,"\nTest 2: Allocate second page\n");
+    const alloc2 = try bm.allocPageFrame();
+    std.debug.print("  Allocated page with PFN: {}\n", .{alloc2.pfn});
+
+    // Test 3: Mark page as dirty
+    try stdout.writeStreamingAll(io,"\nTest 3: Mark page as dirty\n");
+    bm.markDirty(alloc1.pfn);
+    std.debug.print("  Marked PFN {} as dirty\n", .{alloc1.pfn});
+
+    // Test 4: Try to free a page with pin count > 0 (should fail)
+    try stdout.writeStreamingAll(io,"\nTest 4: Try to free page with pin count > 0 (should fail)\n");
+    if (bm.freePageFrame(alloc1.pfn)) {
+        try stdout.writeStreamingAll(io,"  ERROR: Should have failed!\n");
+    } else |err| {
+        std.debug.print("  Got expected error: {}\n", .{err});
     }
 
-    // In order to do I/O operations need an `Io` instance.
-    const io = init.io;
+    // Test 5: Decrement pin count
+    try stdout.writeStreamingAll(io,"\nTest 5: Decrement pin count\n");
+    bm.decrementPinCount(alloc1.pfn);
+    std.debug.print("  Decremented pin count for PFN {}\n", .{alloc1.pfn});
 
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
+    // Test 6: Free page with pin count = 0 (should succeed)
+    try stdout.writeStreamingAll(io,"\nTest 6: Free page with pin count = 0 (should succeed)\n");
+    try bm.freePageFrame(alloc1.pfn);
+    std.debug.print("  Successfully freed PFN {}\n", .{alloc1.pfn});
 
-    try dbimpl.printAnotherMessage(stdout_writer);
+    // Test 7: Allocate pages until frames run out (should fail on 9th allocation)
+    try stdout.writeStreamingAll(io,"\nTest 7: Allocate pages until frames run out\n");
+    var pfns: [10]u64 = undefined;
+    var allocated_count: usize = 0;
+    for (0..10) |i| {
+        if (bm.allocPageFrame()) |alloc| {
+            pfns[i] = alloc.pfn;
+            allocated_count = i + 1;
+            std.debug.print("  Allocated PFN: {}\n", .{alloc.pfn});
+        } else |err| {
+            std.debug.print("  Failed to allocate page {} (expected): {}\n", .{i + 1, err});
+            break;
+        }
+    }
 
-    try stdout_writer.flush(); // Don't forget to flush!
-}
+    // Test 8: Unpin one page and allocate again (should succeed via eviction)
+    try stdout.writeStreamingAll(io,"\nTest 8: Unpin one page and allocate again\n");
+    bm.decrementPinCount(pfns[0]);
+    std.debug.print("  Unpinned PFN {}\n", .{pfns[0]});
+    const new_alloc = try bm.allocPageFrame();
+    std.debug.print("  Successfully allocated PFN {} (evicted a frame)\n", .{new_alloc.pfn});
+    pfns[allocated_count] = new_alloc.pfn;
+    allocated_count += 1;
 
-test "simple test" {
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(i32) = .empty;
-    defer list.deinit(gpa); // Try commenting this out and see if zig detects the memory leak!
-    try list.append(gpa, 42);
-    try std.testing.expectEqual(@as(i32, 42), list.pop());
-}
+    // Test 9: Cleanup - decrement all pin counts
+    try stdout.writeStreamingAll(io,"\nTest 9: Cleanup - decrement all pin counts\n");
+    for (pfns[0..allocated_count]) |pfn| {
+        bm.decrementPinCount(pfn);
+    }
+    try stdout.writeStreamingAll(io,"  All pin counts decremented\n");
 
-test "fuzz example" {
-    try std.testing.fuzz({}, testOne, .{});
-}
-
-fn testOne(context: void, smith: *std.testing.Smith) !void {
-    _ = context;
-    // Try passing `--fuzz` to `zig build test` and see if it manages to fail this test case!
-
-    const gpa = std.testing.allocator;
-    var list: std.ArrayList(u8) = .empty;
-    defer list.deinit(gpa);
-    while (!smith.eos()) switch (smith.value(enum { add_data, dup_data })) {
-        .add_data => {
-            const slice = try list.addManyAsSlice(gpa, smith.value(u4));
-            smith.bytes(slice);
-        },
-        .dup_data => {
-            if (list.items.len == 0) continue;
-            if (list.items.len > std.math.maxInt(u32)) return error.SkipZigTest;
-            const len = smith.valueRangeAtMost(u32, 1, @min(32, list.items.len));
-            const off = smith.valueRangeAtMost(u32, 0, @intCast(list.items.len - len));
-            try list.appendSlice(gpa, list.items[off..][0..len]);
-            try std.testing.expectEqualSlices(
-                u8,
-                list.items[off..][0..len],
-                list.items[list.items.len - len ..],
-            );
-        },
-    };
+    try stdout.writeStreamingAll(io,"\n=== All tests completed ===\n");
 }
