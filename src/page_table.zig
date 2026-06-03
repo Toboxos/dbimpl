@@ -1,36 +1,58 @@
 const std = @import("std");
 
-pub const page_size = 1 << 12;
-pub const Page = struct { mem: [page_size]u8 align(page_size) };
-
 pub const FrameMetadata = packed struct {
     pin_count: u8,
     dirty: u1,
 };
 
-pub const FramePool = struct {
-    /// Number of frames this pool offers.O
-    /// Fixed for now, maybe runtime in future.
-    pub const num_frames: u8 = 8;
+pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
+    return struct {
+        pub const Page = struct { mem: [page_size]u8 align(page_size) };
 
-    /// Memory region for loaded pages
-    frames: [num_frames]Page align(@sizeOf(Page)) = [_]Page{.{ .mem = undefined }} ** num_frames,
+        /// Number of frames this pool offers.
+        pub const num_frames: u64 = n_frames;
 
-    /// Holds the assigned PFN for each frame slot (by index).
-    /// Used for fast lookup.
-    /// 0 = not assigned (special case)
-    frames_assignment: [num_frames]u64 align(8) = .{0} ** num_frames,
+        /// Memory region for loaded pages
+        frames: []Page,  
 
-    frames_metadata: [num_frames]FrameMetadata align(2) = [_]FrameMetadata{.{
-        .pin_count = 0,
-        .dirty = 0,
-    }} ** num_frames,
+        /// Holds the assigned PFN for each frame slot (by index).
+        /// 0 = not assigned (special case)
+        frames_assignment: []u64,
 
-    pub fn resolveFrame(self: *FramePool, pfn: u64) ?u8 {
-        const index = std.mem.findScalar(u64, &self.frames_assignment, pfn);
-        return if (index) |v| @intCast(v) else null;
-    }
-};
+        frames_metadata: []FrameMetadata,
+
+        pub fn Init(alloc: std.mem.Allocator) !@This() {
+            const frames = try alloc.alignedAlloc(Page, null, n_frames); 
+            errdefer alloc.free(frames);
+
+            const frames_assignment = try alloc.alloc(u64, n_frames);
+            errdefer alloc.free(frames_assignment);
+
+            const frames_metadata = try alloc.alloc(FrameMetadata, n_frames);
+            errdefer alloc.free(frames_metadata);
+
+            @memset(frames_assignment, 0);
+            @memset(frames_metadata, .{.pin_count = 0, .dirty = 0});
+
+            const instance = @This(){
+               .frames = frames,
+               .frames_assignment = frames_assignment,
+               .frames_metadata = frames_metadata
+            };
+            return instance;
+        }
+
+        pub fn Deinit(self: *@This(), alloc: std.mem.Allocator) void {
+           alloc.free(self.frames);
+           alloc.free(self.frames_assignment);
+           alloc.free(self.frames_metadata);
+        }
+
+        pub fn resolveFrame(self: *@This(), pfn: u64) ?u64 {
+            return std.mem.findScalar(u64, self.frames_assignment, pfn);
+        }
+    };
+}
 
 test "FrameMetdata is 2 bytes" {
     try std.testing.expectEqual(2, @sizeOf(FrameMetadata));

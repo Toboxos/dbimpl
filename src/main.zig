@@ -1,156 +1,71 @@
 const std = @import("std");
-const BufferManager = @import("buffer_manager").BufferManager;
+
+const bench = @import("benchmark.zig");
+
+const Scenario = struct {
+    mem_capacity: u64,
+    disk_capacity: u64,
+    theta: f64,
+    request_count: u64,
+};
 
 pub fn main(init: std.process.Init) !void {
-    const io = init.io;
-    var bm = BufferManager{};
+    // NOTE: Feel free to change these based on your system, what you implemented etc.
+    const file_path = "bfr_mngr_file";
+    const mem_capacity = 1 << 30;
+    const thread_count = 16;
+    const implemented_variants: enum { OnlySingleThreaded, MultiThreaded, MTAsync } = .OnlySingleThreaded;
+    const verify = true;
+    const total_request_count = 1 << 24;
 
-    // try my_test(&bm);
-    try run_tests(&bm, io);
-    // _ = io;
-}
+    const page_size = 1 << 12;
+    const theta_high = 2;
+    const theta_low = 0.5;
 
-fn my_test(bm: *BufferManager) !void {
-    for (0..16) |i| {
-        const alloc = try bm.allocPageFrame();
-        alloc.page.mem[0] = @intCast(i);
+    const low_mem_capacity = mem_capacity >> 3;
 
-        bm.decrementPinCount(alloc.pfn);
-    }
-}
+    const disk_capacity_high = low_mem_capacity << 3;
+    const disk_capacity_low = mem_capacity << 1;
+    const disk_capacity_no_io = mem_capacity;
 
-fn run_tests(bm: *BufferManager, io: std.Io) !void {
-    const stdout = std.Io.File.stdout();
-    try stdout.writeStreamingAll(io, "=== Buffer Manager Tests ===\n");
+    const request_count_no_io = total_request_count;
+    const request_count_low_io = total_request_count >> 3;
+    const request_count_high_io = total_request_count >> 5;
 
-    // Test 1: Allocate a page
-    try stdout.writeStreamingAll(io, "\nTest 1: Allocate a page\n");
-    const alloc1 = try bm.allocPageFrame();
-    std.debug.print("  Allocated page with PFN: {}\n", .{alloc1.pfn});
+    const scenarios = [_]Scenario{
+        .{ .mem_capacity = mem_capacity, .disk_capacity = disk_capacity_no_io, .theta = theta_high, .request_count = request_count_no_io },
+        .{ .mem_capacity = mem_capacity, .disk_capacity = disk_capacity_no_io, .theta = theta_low, .request_count = request_count_no_io },
 
-    // Test 2: Allocate another page
-    try stdout.writeStreamingAll(io, "\nTest 2: Allocate second page\n");
-    const alloc2 = try bm.allocPageFrame();
-    std.debug.print("  Allocated page with PFN: {}\n", .{alloc2.pfn});
+        .{ .mem_capacity = mem_capacity, .disk_capacity = disk_capacity_low, .theta = theta_high, .request_count = request_count_low_io },
+        .{ .mem_capacity = mem_capacity, .disk_capacity = disk_capacity_low, .theta = theta_low, .request_count = request_count_low_io },
 
-    // Test 3: Mark page as dirty
-    try stdout.writeStreamingAll(io, "\nTest 3: Mark page as dirty\n");
-    bm.markDirty(alloc1.pfn);
-    std.debug.print("  Marked PFN {} as dirty\n", .{alloc1.pfn});
+        .{ .mem_capacity = low_mem_capacity, .disk_capacity = disk_capacity_high, .theta = theta_high, .request_count = request_count_high_io },
+        .{ .mem_capacity = low_mem_capacity, .disk_capacity = disk_capacity_high, .theta = theta_low, .request_count = request_count_high_io },
+    };
 
-    // Test 4: Try to free a page with pin count > 0 (should fail)
-    try stdout.writeStreamingAll(io, "\nTest 4: Try to free page with pin count > 0 (should fail)\n");
-    if (bm.freePageFrame(alloc1.pfn)) {
-        try stdout.writeStreamingAll(io, "  ERROR: Should have failed!\n");
-    } else |err| {
-        std.debug.print("  Got expected error: {}\n", .{err});
-    }
+    const bench_types = switch (implemented_variants) {
+        .OnlySingleThreaded => [_]bench.BenchType{.SingleThreadedSync},
+        .MultiThreaded => [_]bench.BenchType{ .SingleThreadedSync, .{ .MultiThreadedSync = .{ .thread_count = thread_count } } },
+        .MTAsync => [_]bench.BenchType{
+            .SingleThreadedSync,
+            .{ .MultiThreadedSync = .{ .thread_count = thread_count } },
+            .{ .MultiThreadedAsync = .{ .thread_count = thread_count } },
+        },
+    };
 
-    // Test 5: Decrement pin count
-    try stdout.writeStreamingAll(io, "\nTest 5: Decrement pin count\n");
-    bm.decrementPinCount(alloc1.pfn);
-    std.debug.print("  Decremented pin count for PFN {}\n", .{alloc1.pfn});
-
-    // Test 6: Free page with pin count = 0 (should succeed)
-    try stdout.writeStreamingAll(io, "\nTest 6: Free page with pin count = 0 (should succeed)\n");
-    try bm.freePageFrame(alloc1.pfn);
-    std.debug.print("  Successfully freed PFN {}\n", .{alloc1.pfn});
-
-    // Test 7: Allocate pages until frames run out (should fail on 9th allocation)
-    try stdout.writeStreamingAll(io, "\nTest 7: Allocate pages until frames run out\n");
-    var pfns: [10]u64 = undefined;
-    var allocated_count: usize = 0;
-    for (0..10) |i| {
-        if (bm.allocPageFrame()) |alloc| {
-            pfns[i] = alloc.pfn;
-            allocated_count = i + 1;
-            std.debug.print("  Allocated PFN: {}\n", .{alloc.pfn});
-        } else |err| {
-            std.debug.print("  Failed to allocate page {} (expected): {}\n", .{ i + 1, err });
-            break;
+    inline for (scenarios) |scenario| {
+        inline for (bench_types) |bench_type| {
+            _ = try bench.RunBenchmark(
+                scenario.mem_capacity,
+                scenario.disk_capacity,
+                page_size,
+                bench_type,
+                verify,
+                scenario.theta,
+                scenario.request_count,
+                file_path,
+                init.io
+            );
         }
     }
-
-    // Test 8: Unpin one page and allocate again (should succeed via eviction)
-    try stdout.writeStreamingAll(io, "\nTest 8: Unpin one page and allocate again\n");
-    bm.decrementPinCount(pfns[0]);
-    std.debug.print("  Unpinned PFN {}\n", .{pfns[0]});
-    const new_alloc = try bm.allocPageFrame();
-    std.debug.print("  Successfully allocated PFN {} (evicted a frame)\n", .{new_alloc.pfn});
-    pfns[allocated_count] = new_alloc.pfn;
-    allocated_count += 1;
-
-    // Test 9: Cleanup - decrement all pin counts
-    try stdout.writeStreamingAll(io, "\nTest 9: Cleanup - decrement all pin counts\n");
-    for (pfns[0..allocated_count]) |pfn| {
-        bm.decrementPinCount(pfn);
-    }
-    try stdout.writeStreamingAll(io, "  All pin counts decremented\n");
-
-    // Test 10: Reload a page that's in memory
-    try stdout.writeStreamingAll(io, "\nTest 10: Reload a page that's in memory\n");
-    const test_alloc = try bm.allocPageFrame();
-    const test_pfn = test_alloc.pfn;
-    // Write some data to the page
-    @memset(&test_alloc.page.mem, 0xAB);
-    bm.decrementPinCount(test_pfn);
-    // Reload the page
-    const reloaded = try bm.pfnToPage(test_pfn);
-    std.debug.print("  Successfully reloaded PFN {}, first byte: 0x{X}\n", .{ test_pfn, reloaded.mem[0] });
-    bm.decrementPinCount(test_pfn);
-
-    // Test 11: Try to reload an evicted page (will fail - disk not implemented)
-    try stdout.writeStreamingAll(io, "\nTest 11: Try to reload an evicted page\n");
-    const evict_alloc = try bm.allocPageFrame();
-    const evict_pfn = evict_alloc.pfn;
-    @memset(&evict_alloc.page.mem, 0xCD);
-    std.debug.print("  Allocated PFN {} and wrote 0xCD pattern\n", .{evict_pfn});
-    bm.decrementPinCount(evict_pfn);
-
-    // Allocate enough pages to evict it
-    var evict_pfns: [8]u64 = undefined;
-    for (0..8) |i| {
-        const alloc = try bm.allocPageFrame();
-        evict_pfns[i] = alloc.pfn;
-        bm.decrementPinCount(alloc.pfn);
-    }
-    std.debug.print("  Allocated 8 more pages, PFN {} should be evicted\n", .{evict_pfn});
-
-    // Try to reload the evicted page
-    if (bm.pfnToPage(evict_pfn)) |page| {
-        std.debug.print("  Reloaded evicted page, first byte: 0x{X}\n", .{page.mem[0]});
-        bm.decrementPinCount(evict_pfn);
-    } else |err| {
-        std.debug.print("  Got expected error (disk not implemented): {}\n", .{err});
-    }
-
-    // Cleanup
-    for (evict_pfns) |pfn| {
-        bm.decrementPinCount(pfn);
-    }
-
-    // Test 12: Try to reload a non-existent PFN
-    try stdout.writeStreamingAll(io, "\nTest 12: Try to reload non-existent PFN\n");
-    const fake_pfn: u64 = 999999;
-    if (bm.pfnToPage(fake_pfn)) |_| {
-        try stdout.writeStreamingAll(io, "  ERROR: Should have failed!\n");
-    } else |err| {
-        std.debug.print("  Got expected error: {}\n", .{err});
-    }
-
-    // Test 13: Try to reload a freed PFN
-    try stdout.writeStreamingAll(io, "\nTest 13: Try to reload a freed PFN\n");
-    const to_free = try bm.allocPageFrame();
-    const freed_pfn = to_free.pfn;
-    bm.decrementPinCount(freed_pfn);
-    try bm.freePageFrame(freed_pfn);
-    std.debug.print("  Freed PFN {}\n", .{freed_pfn});
-
-    if (bm.pfnToPage(freed_pfn)) |_| {
-        try stdout.writeStreamingAll(io, "  ERROR: Should have failed!\n");
-    } else |err| {
-        std.debug.print("  Got expected error: {}\n", .{err});
-    }
-
-    try stdout.writeStreamingAll(io, "\n=== All tests completed ===\n");
 }

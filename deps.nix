@@ -3,11 +3,4 @@
 { linkFarm, fetchzip, fetchgit }:
 
 linkFarm "zig-packages" [
-  {
-    name = "zbench-0.13.0-YTdc71ZAAQCUJ0w9jM6ZyLOBxDlGv2j3CqCEj49l-KcP";
-    path = fetchzip {
-      url = "https://github.com/hendriknielaender/zbench/archive/refs/heads/main.tar.gz";
-      hash = "sha256-IAaSLTrh299zBusqRBSBV7fszF4uxjR8BnkdoQjHvY4=";
-    };
-  }
 ]

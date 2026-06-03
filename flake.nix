@@ -35,7 +35,7 @@
             nativeBuildInputs = [ pkgs.zig ];
 
             buildPhase = ''
-              zig build -Doptimize=ReleaseSafe --system ${zigDeps}
+              zig build -Doptimize=Release --system ${zigDeps}
             '';
             installPhase = ''
               mkdir -p $out/bin
@@ -43,26 +43,12 @@
             '';
           };
 
-          benchmark = pkgs.stdenv.mkDerivation {
-            name = "dbimpl-benchmark";
-            src = ./.;
-
-            nativeBuildInputs = [ pkgs.zig ];
-
-            buildPhase = ''
-              zig build -Doptimize=ReleaseFast --system ${zigDeps}
-            '';
-            installPhase = ''
-              mkdir -p $out/bin
-              cp zig-out/bin/benchmark $out/bin/
-            '';
-          };
         };
 
         apps = {
           benchmark = {
             type = "app";
-            program = "${self.packages.${system}.benchmark}/bin/benchmark";
+            program = "${self.packages.${system}.default}/bin/benchmark";
           };
         };
       }
