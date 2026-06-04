@@ -35,6 +35,8 @@ docgen_tmp/
 
 # End of https://www.toptal.com/developers/gitignore/api/zig,vim
 
+.DS_Store
 page*
-result/
+result
+bfr_mngr_file
 
