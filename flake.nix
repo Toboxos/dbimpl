@@ -35,7 +35,7 @@
             nativeBuildInputs = [ pkgs.zig ];
 
             buildPhase = ''
-              zig build -Doptimize=Release --system ${zigDeps}
+              zig build -Doptimize=ReleaseFast --system ${zigDeps}
             '';
             installPhase = ''
               mkdir -p $out/bin
