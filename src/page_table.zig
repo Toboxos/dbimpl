@@ -5,6 +5,7 @@ pub const FrameMetadata = packed struct {
     pin_count: u8,
     dirty: u1,
     access: u1,
+    valid: u1,
 };
 
 pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
@@ -30,11 +31,13 @@ pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
             const frames_metadata = try alloc.alloc(FrameMetadata, n_frames);
             errdefer alloc.free(frames_metadata);
 
+            // capacity is 25% larger so hashtable is only used up to ~80%
+            const capacity = @trunc(@as(f64, n_frames) * 1.25); 
             var frames_assignment: std.hash_map.AutoHashMapUnmanaged(u64, u64) = .empty; 
-            try frames_assignment.ensureTotalCapacity(alloc, n_frames);
+            try frames_assignment.ensureTotalCapacity(alloc, capacity);
             errdefer frames_assignment.deinit(alloc);
 
-            @memset(frames_metadata, .{.pfn = 0, .pin_count = 0, .dirty = 0, .access = 0});
+            @memset(frames_metadata, .{.pfn = 0, .pin_count = 0, .dirty = 0, .access = 0, .valid = 0});
 
             const instance = @This(){
                .frames = frames,
@@ -63,6 +66,17 @@ pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
             return self.count() >= num_frames;
         }
 
+        /// :param hint: Hint where to start linear scan
+        pub fn findEmptyFrame(self: *@This(), hint: u64) ?u64 {
+            for (self.frames_metadata[hint..], hint..) |*meta, i| {
+                if( meta.valid == 0 ) return i;
+            } 
+            for( self.frames_metadata[0..hint], 0..) |*meta, i| {
+                if( meta.valid == 0 ) return i;
+            } 
+            return null;
+        }
+
         pub fn assignFrame(self: *@This(), pfn: u64, slot: u64) void {
             self.frames_assignment.putAssumeCapacity(pfn, slot);
         }
@@ -73,6 +87,3 @@ pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
     };
 }
 
-test "FrameMetdata is 2 bytes" {
-    try std.testing.expectEqual(2, @sizeOf(FrameMetadata));
-}

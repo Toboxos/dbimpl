@@ -25,8 +25,8 @@ pub fn BufferManager(
 
         /// globally increasing counter thats used for enumerating new pages
         pfn_counter: u64 = 0,
-        
-        // file handle of disk storage
+
+        /// file handle of disk storage
         file: std.Io.File,
 
         dir: std.Io.Dir = std.Io.Dir.cwd(),
@@ -58,7 +58,7 @@ pub fn BufferManager(
         }
 
         pub fn AllocPageFrame(self: *@This()) !struct { pfn: u64, page: *FramePool.Page } {
-            const free_frame: ?u64 = if (self.frame_pool.isFull()) null else self.frame_pool.count(); 
+            const free_frame: ?u64 = if (self.frame_pool.isFull()) null else self.frame_pool.findEmptyFrame(self.frame_pool.count());
             const frame_index = free_frame orelse try self.evictPage();
             const new_pfn = self.pfn_counter;
             self.pfn_counter += 1;
@@ -69,6 +69,7 @@ pub fn BufferManager(
                 .pin_count = 1,
                 .dirty = 1,
                 .access = 1,
+                .valid = 1,
             };
             self.frame_pool.assignFrame(new_pfn, frame_index);
             return .{
@@ -90,6 +91,7 @@ pub fn BufferManager(
                     .pin_count = 0,
                     .dirty = 0,
                     .access = 0,
+                    .valid = 0,
                 };
             }
 
@@ -116,6 +118,7 @@ pub fn BufferManager(
                 .pin_count = 1,
                 .dirty = 0,
                 .access = 1,
+                .valid = 1,
             };
             return &self.frame_pool.frames[frame_index];
         }
@@ -141,16 +144,8 @@ pub fn BufferManager(
         }
 
         fn evictPage(self: *@This()) !u64 {
-            const evict_index = for (self.frame_pool.frames_metadata, 0..) |*meta, i| {
-                if (meta.pin_count != 0) continue; 
-                if (meta.access == 1 ) {
-                    meta.access = 0;
-                    continue;
-                } 
-                break i;
-            } else for (self.frame_pool.frames_metadata, 0..) |*meta, i| {
-                if (meta.access == 0) break i;
-            } else return error.AllFramesInUse;
+            // Two pass clock eviction
+            const evict_index = self.clockEviction() orelse self.clockEviction() orelse return error.AllFramesInUse;
 
             if (self.frame_pool.frames_metadata[evict_index].dirty == 1) {
                 try self.flushFrame(evict_index);
@@ -166,6 +161,19 @@ pub fn BufferManager(
             const offset = pfn * page_size;
 
             try self.file.writePositionalAll(io, &self.frame_pool.frames[frame_index].mem, offset);
+        }
+        
+        fn clockEviction(self: *@This()) ?u64 {
+            for (self.frame_pool.frames_metadata, 0..) |*meta, i| {
+                if (meta.pin_count != 0) continue; 
+                if (meta.access == 1 ) {
+                    meta.access = 0;
+                    continue;
+                }
+                return i;
+            }
+            
+            return null;
         }
     };
 }
