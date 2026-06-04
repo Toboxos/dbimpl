@@ -25,17 +25,28 @@ pub fn BufferManager(
 
         /// globally increasing counter thats used for enumerating new pages
         pfn_counter: u64 = 0,
+        
+        // file handle of disk storage
+        file: std.Io.File,
 
         dir: std.Io.Dir = std.Io.Dir.cwd(),
 
         alloc: std.mem.Allocator,
 
         pub fn Init(file_path: [] const u8) !@This() {
-            _ = file_path;
             const alloc = std.heap.smp_allocator;
+
+            const dir = std.Io.Dir.cwd();
+            const file = try dir.createFile(
+                io,
+                file_path,
+                .{ .read = true, }
+            );
 
             const instance = @This(){
                 .frame_pool = try FramePool.Init(alloc),
+                .file = file,
+                .dir = dir,
                 .alloc = alloc,
             };
             return instance;
@@ -43,6 +54,7 @@ pub fn BufferManager(
 
         pub fn Deinit(self: *@This()) void {
             self.frame_pool.Deinit(self.alloc);
+            self.file.close(io);
         }
 
         pub fn AllocPageFrame(self: *@This()) !struct { pfn: u64, page: *FramePool.Page } {
@@ -81,10 +93,9 @@ pub fn BufferManager(
                 };
             }
 
-            var buf: [32]u8 = undefined;
-            const filename = try std.fmt.bufPrint(&buf, "page_{x}", .{pfn});
-
-            self.dir.deleteFile(io, filename) catch {};
+            // Currently no deletion inside the file.
+            // Freed section just become dead space.
+            // Could be improved for reuse in future.
         }
 
         pub fn PFNToPage(self: *@This(), pfn: u64, thread_id: u64) !*FramePool.Page {
@@ -94,13 +105,11 @@ pub fn BufferManager(
                 self.frame_pool.frames_metadata[frame_index].pin_count += 1;
                 return &self.frame_pool.frames[frame_index];
             }
-
             const frame_index = try self.evictPage();
 
-            var buf: [32]u8 = undefined;
-            const filename = try std.fmt.bufPrint(&buf, "page_{x}", .{pfn});
+            const offset = pfn * page_size;
 
-            _ = try self.dir.readFile(io, filename, &self.frame_pool.frames[frame_index].mem);
+            _ = try self.file.readPositionalAll(io, &self.frame_pool.frames[frame_index].mem, offset);
             self.frame_pool.assignFrame(pfn, frame_index);
             self.frame_pool.frames_metadata[frame_index] = .{
                 .pfn = pfn,
@@ -154,14 +163,9 @@ pub fn BufferManager(
 
         fn flushFrame(self: *@This(), frame_index: u64) !void {
             const pfn = self.frame_pool.frames_metadata[frame_index].pfn;
+            const offset = pfn * page_size;
 
-            var buf: [32]u8 = undefined;
-            const filename = try std.fmt.bufPrint(&buf, "page_{x}", .{pfn});
-
-            try self.dir.writeFile(io, .{
-                .sub_path = filename,
-                .data = &self.frame_pool.frames[frame_index].mem,
-            });
+            try self.file.writePositionalAll(io, &self.frame_pool.frames[frame_index].mem, offset);
         }
     };
 }
