@@ -24,7 +24,7 @@ pub fn BufferManager(
         frame_pool: FramePool,
 
         /// globally increasing counter thats used for enumerating new pages
-        pfn_counter: u64 = 1,
+        pfn_counter: u64 = 0,
 
         dir: std.Io.Dir = std.Io.Dir.cwd(),
 
@@ -46,18 +46,19 @@ pub fn BufferManager(
         }
 
         pub fn AllocPageFrame(self: *@This()) !struct { pfn: u64, page: *FramePool.Page } {
-            const result = self.frame_pool.resolveFrame(0); // 0 = free frame
-            const frame_index = result orelse try self.evictPage();
-
+            const free_frame: ?u64 = if (self.frame_pool.isFull()) null else self.frame_pool.count(); 
+            const frame_index = free_frame orelse try self.evictPage();
             const new_pfn = self.pfn_counter;
             self.pfn_counter += 1;
 
             @memset(&self.frame_pool.frames[frame_index].mem, 0);
             self.frame_pool.frames_metadata[frame_index] = .{
+                .pfn = new_pfn,
                 .pin_count = 1,
                 .dirty = 1,
+                .access = 1,
             };
-            self.frame_pool.frames_assignment[frame_index] = new_pfn;
+            self.frame_pool.assignFrame(new_pfn, frame_index);
             return .{
                 .pfn = new_pfn,
                 .page = &self.frame_pool.frames[frame_index],
@@ -71,7 +72,13 @@ pub fn BufferManager(
                     return error.PageInUse;
                 }
 
-                self.frame_pool.frames_assignment[frame_index] = 0;
+                // instead of give up the slot mark it ready for next eviction phase
+                self.frame_pool.frames_metadata[frame_index] = .{
+                    .pfn = 0,
+                    .pin_count = 0,
+                    .dirty = 0,
+                    .access = 0,
+                };
             }
 
             var buf: [32]u8 = undefined;
@@ -94,10 +101,12 @@ pub fn BufferManager(
             const filename = try std.fmt.bufPrint(&buf, "page_{x}", .{pfn});
 
             _ = try self.dir.readFile(io, filename, &self.frame_pool.frames[frame_index].mem);
-            self.frame_pool.frames_assignment[frame_index] = pfn;
+            self.frame_pool.assignFrame(pfn, frame_index);
             self.frame_pool.frames_metadata[frame_index] = .{
+                .pfn = pfn,
                 .pin_count = 1,
                 .dirty = 0,
+                .access = 1,
             };
             return &self.frame_pool.frames[frame_index];
         }
@@ -122,21 +131,29 @@ pub fn BufferManager(
             self.frame_pool.frames_metadata[frame_index].pin_count -= 1;
         }
 
-        fn evictPage(self: *@This()) !u8 {
-            const evict_index: u8 = try for (self.frame_pool.frames_metadata, 0..) |meta, i| {
-                if (meta.pin_count == 0) break @as(u8, @intCast(i));
-            } else null orelse error.AllFramesInUse;
+        fn evictPage(self: *@This()) !u64 {
+            const evict_index = for (self.frame_pool.frames_metadata, 0..) |*meta, i| {
+                if (meta.pin_count != 0) continue; 
+                if (meta.access == 1 ) {
+                    meta.access = 0;
+                    continue;
+                } 
+                break i;
+            } else for (self.frame_pool.frames_metadata, 0..) |*meta, i| {
+                if (meta.access == 0) break i;
+            } else return error.AllFramesInUse;
 
             if (self.frame_pool.frames_metadata[evict_index].dirty == 1) {
                 try self.flushFrame(evict_index);
             }
 
-            self.frame_pool.frames_assignment[evict_index] = 0;
+            const pfn = self.frame_pool.frames_metadata[evict_index].pfn;
+            _ = self.frame_pool.freeFrame(pfn);
             return evict_index;
         }
 
-        fn flushFrame(self: *@This(), frame_index: u8) !void {
-            const pfn = self.frame_pool.frames_assignment[frame_index];
+        fn flushFrame(self: *@This(), frame_index: u64) !void {
+            const pfn = self.frame_pool.frames_metadata[frame_index].pfn;
 
             var buf: [32]u8 = undefined;
             const filename = try std.fmt.bufPrint(&buf, "page_{x}", .{pfn});
@@ -148,3 +165,5 @@ pub fn BufferManager(
         }
     };
 }
+
+

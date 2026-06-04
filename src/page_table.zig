@@ -1,8 +1,10 @@
 const std = @import("std");
 
 pub const FrameMetadata = packed struct {
+    pfn: u64,
     pin_count: u8,
     dirty: u1,
+    access: u1,
 };
 
 pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
@@ -15,24 +17,24 @@ pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
         /// Memory region for loaded pages
         frames: []Page,  
 
-        /// Holds the assigned PFN for each frame slot (by index).
-        /// 0 = not assigned (special case)
-        frames_assignment: []u64,
-
+        /// Unmanaged Hashtable (linear layout, no allocations) for pfn -> index lookup
+        frames_assignment: std.hash_map.AutoHashMapUnmanaged(u64, u64),
+    
+        // Frame metadata
         frames_metadata: []FrameMetadata,
 
         pub fn Init(alloc: std.mem.Allocator) !@This() {
             const frames = try alloc.alignedAlloc(Page, null, n_frames); 
             errdefer alloc.free(frames);
 
-            const frames_assignment = try alloc.alloc(u64, n_frames);
-            errdefer alloc.free(frames_assignment);
-
             const frames_metadata = try alloc.alloc(FrameMetadata, n_frames);
             errdefer alloc.free(frames_metadata);
 
-            @memset(frames_assignment, 0);
-            @memset(frames_metadata, .{.pin_count = 0, .dirty = 0});
+            var frames_assignment: std.hash_map.AutoHashMapUnmanaged(u64, u64) = .empty; 
+            try frames_assignment.ensureTotalCapacity(alloc, n_frames);
+            errdefer frames_assignment.deinit(alloc);
+
+            @memset(frames_metadata, .{.pfn = 0, .pin_count = 0, .dirty = 0, .access = 0});
 
             const instance = @This(){
                .frames = frames,
@@ -44,12 +46,29 @@ pub fn FramePool(comptime page_size: u64, comptime n_frames: u64) type {
 
         pub fn Deinit(self: *@This(), alloc: std.mem.Allocator) void {
            alloc.free(self.frames);
-           alloc.free(self.frames_assignment);
            alloc.free(self.frames_metadata);
+
+           self.frames_assignment.deinit(alloc);
         }
 
         pub fn resolveFrame(self: *@This(), pfn: u64) ?u64 {
-            return std.mem.findScalar(u64, self.frames_assignment, pfn);
+            return self.frames_assignment.get(pfn);
+        }
+
+        pub fn count(self: *@This()) u32 {
+            return self.frames_assignment.count();
+        }
+
+        pub fn isFull(self: *@This()) bool {
+            return self.count() >= num_frames;
+        }
+
+        pub fn assignFrame(self: *@This(), pfn: u64, slot: u64) void {
+            self.frames_assignment.putAssumeCapacity(pfn, slot);
+        }
+
+        pub fn freeFrame(self: *@This(), pfn: u64) bool {
+            return self.frames_assignment.remove(pfn);
         }
     };
 }
