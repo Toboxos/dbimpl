@@ -1,18 +1,18 @@
-# Database Implementation
+# 🗄️ Database Implementation
 
 A study project following the course "Implementation of Database Systems" at LMU Munich, implementing various components of a database system from scratch in Zig.
 
-## Overview
+## 📋 Overview
 
 This project aims to build a simple but functional database system by implementing fundamental database components. The implementation is written entirely in Zig, focusing on understanding the core concepts of database systems through hands-on development.
 
-### Components
+### ⚙️ Components
 
 - **Buffer Manager**: Buffer pool management for managing loading pages into memory.
 
-## Building the Project
+## 🔨 Building the Project
 
-### Using Zig
+### Using Zig ⚡
 
 Requirements:
 - Zig compiler
@@ -21,14 +21,11 @@ Requirements:
 # Build the project
 zig build
 
-# Run main application (currently only tests)
+# Run main application (currently only benchmarks)
 ./zig-out/bin/dbimpl
-
-# Run benchmarks
-./zig-out/bin/benchmark
 ```
 
-### Using Nix
+### Using Nix ❄️
 The repo is configured that every target can be built and packaged via nix:
 
 ```bash
@@ -42,7 +39,7 @@ nix build
 ./result/bin/dbimpl
 
 # Build and run benchmarks
-nix build .#benchmark
-nix run .#benchmark
+nix build 
+nix run
 ```
 
